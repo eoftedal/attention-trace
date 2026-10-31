@@ -2,6 +2,7 @@
 import { computed } from 'vue';
 import { fmtPct } from '../lib/format';
 import { useTraceStore } from '../stores/trace';
+import StageSection from './StageSection.vue';
 
 // Layers × heads: how much attention each head puts on the tokens the filters
 // allow (other messages, far back, …). Finds the heads that carry
@@ -21,14 +22,14 @@ const isOn = (li: number, h: number) => trace.layerSel === li && !trace.hidden.h
 </script>
 
 <template>
-  <section v-if="map" class="stage-section">
-    <header class="section-head">
-      <h2>Which heads look there</h2>
-      <div class="seg-toggle" role="group" aria-label="Scope">
+  <StageSection v-if="trace.queryPos != null" id="headmap" title="Which heads look there" collapsed>
+    <template #head="{ open }">
+      <div v-if="open" class="seg-toggle" role="group" aria-label="Scope">
         <button type="button" :class="{ on: trace.mapScope === 'token' }" @click="trace.mapScope = 'token'">Selected token</button>
         <button type="button" :class="{ on: trace.mapScope === 'message' }" @click="trace.mapScope = 'message'">Its whole message</button>
       </div>
-    </header>
+    </template>
+    <template v-if="map">
     <p class="hint explain">
       Share of each head's attention that goes to {{ what }}{{ trace.mapScope === 'message' ? `, averaged over the ${map.queries} tokens of the selected token's message` : '' }}.
       Darker is more (scaled to the strongest head, {{ fmtPct(map.max) }}). Click a head to trace with it alone.
@@ -49,5 +50,6 @@ const isOn = (li: number, h: number) => trace.layerSel === li && !trace.hidden.h
         </tbody>
       </table>
     </div>
-  </section>
+    </template>
+  </StageSection>
 </template>

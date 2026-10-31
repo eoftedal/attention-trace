@@ -287,6 +287,6 @@ export const useTraceStore = defineStore('trace', () => {
   return {
     selPos, layerSel, combine, reach, minDist, hops, branch, arcsPerSource, minWeight, skipFirst, skipSpecial, discount,
     hidden, mapScope, produced, queryPos, run, special, template, seriesCount, trace, headMap,
-    seriesLabel, select, toggleSeries, soloSeries, setLayer, focusHead,
+    seriesLabel, allowed, weight, select, toggleSeries, soloSeries, setLayer, focusHead,
   };
 });

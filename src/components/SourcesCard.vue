@@ -3,6 +3,7 @@ import { computed } from 'vue';
 import { display, fmtPct } from '../lib/format';
 import { decode } from '../stores/model';
 import { seriesColor, useTraceStore } from '../stores/trace';
+import StageSection from './StageSection.vue';
 
 // The tokens the trace reaches, strongest first, with a little context.
 const trace = useTraceStore();
@@ -41,8 +42,7 @@ function locate(p: number) {
 </script>
 
 <template>
-  <section v-if="trace.selPos != null" class="stage-section">
-    <header class="section-head"><h2>Strongest sources</h2></header>
+  <StageSection v-if="trace.selPos != null" id="sources" title="Strongest sources" collapsed>
     <p class="hint explain">
       The tokens the trace reaches, by path weight (the product of the attention weights along the way).
       Click a row to find the token; use the button to trace from it instead.
@@ -64,5 +64,5 @@ function locate(p: number) {
       </table>
     </div>
     <p v-else class="hint">No tokens pass the filters.</p>
-  </section>
+  </StageSection>
 </template>

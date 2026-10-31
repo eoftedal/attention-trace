@@ -9,9 +9,9 @@ import type { Segment } from '../stores/chat';
 // The traced conversation as running text, one block per message. Tokens the
 // trace reaches are shaded in the color of their strongest link (head or
 // layer), more opaque for stronger attention; arcs join each query to the
-// keys it attends to most. With a span marked, it shows instead how the
-// reply's first tokens read the span: lines from each reply token to the span
-// tokens it attends to, more opaque for more attention.
+// keys it attends to most. With a span marked, it shows instead where the
+// span reads from: lines from each of its tokens back to the tokens it
+// attends to, more opaque for more attention.
 const trace = useTraceStore();
 const span = useSpanStore();
 const inSpan = (p: number) => span.start != null && span.end != null && p >= span.start && p <= span.end;
@@ -44,7 +44,7 @@ const blocks = computed(() => {
 const shade = computed(() => {
   const out = new Map<number, { style: string; title: string }>();
   if (spanMode.value) {
-    // span tokens by the attention they get, reply tokens by the attention they give the span
+    // tokens read by the attention the span gives them, span tokens by how much they read
     const { received, given } = span.flow!;
     const tok = (p: number) => `#${p} ${JSON.stringify(decode(trace.run!.ids[p]))}`;
     const put = (m: Map<number, number>, what: string) => {
@@ -56,8 +56,8 @@ const shade = computed(() => {
         });
       }
     };
-    put(received, 'Attention from the reply (mean over its tokens):');
-    put(given, 'Attention on the span:');
+    put(received, 'Read by the span (mean over its tokens):');
+    put(given, 'Attention this token puts on what it reads:');
     return out;
   }
   const { hits } = trace.trace;

@@ -1,34 +1,17 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { fmtPct } from '../lib/format';
-import { metricAt, overall, useSpanStore, type SpanMetric, type SpanResult } from '../stores/span';
+import { overall, useSpanStore, type SpanResult } from '../stores/span';
 import { useTraceStore } from '../stores/trace';
 import HeadGrid from './HeadGrid.vue';
+import StageSection from './StageSection.vue';
 
 const span = useSpanStore();
 const trace = useTraceStore();
 
-const METRICS: { key: SpanMetric; label: string }[] = [
-  { key: 'span', label: 'On the span' },
-  { key: 'rest', label: 'On the rest of its message' },
-  { key: 'ratio', label: 'Span vs rest, per token' },
-];
+const fmtDiff = (v: number) => `${v >= 0 ? '+' : '−'}${(Math.abs(v) * 100).toFixed(1)} points`;
 
-// Shares as percentages; the per-token ratio is a log2, shown as a factor.
-const factor = (log2: number) => {
-  const f = 2 ** Math.abs(log2);
-  return `${f >= 10 ? f.toFixed(0) : f.toFixed(1)}×${log2 < 0 ? ' less' : ''}`;
-};
-const fmt = (v: number) => (span.metric === 'ratio' ? factor(v) : fmtPct(v));
-const fmtDiff = (v: number) => (span.metric === 'ratio'
-  ? (v >= 0 ? `${factor(v)} more` : factor(v))
-  : `${v >= 0 ? '+' : '−'}${(Math.abs(v) * 100).toFixed(1)} points`);
-
-const rowsOf = (r: SpanResult) => r.layers.map((L, li) => ({
-  layer: L.layer,
-  cells: Float32Array.from(L.span, (_, h) => metricAt(r, span.metric, li, h)),
-}));
-
+const rowsOf = (r: SpanResult) => r.layers.map(L => ({ layer: L.layer, cells: L.share }));
 const current = computed(() => (span.result ? rowsOf(span.result) : null));
 const pinnedRows = computed(() => (span.pinned ? rowsOf(span.pinned) : null));
 const diffRows = computed(() => {
@@ -37,74 +20,77 @@ const diffRows = computed(() => {
   return current.value.map((row, li) => ({ layer: row.layer, cells: row.cells.map((v, h) => v - a[li].cells[h]) }));
 });
 
-// The heads that put the most attention on the span.
+// Messages by share; what the filters leave out is the rest.
+const bars = computed(() => {
+  const max = Math.max(...span.messages.map(m => m.share), 1e-9);
+  return span.messages.map(m => ({ ...m, width: `${(m.share / max) * 100}%` }));
+});
+const counted = computed(() => span.messages.reduce((s, m) => s + m.share, 0));
+const leftOut = computed(() => [
+  trace.reach === 'messages' ? 'its own message' : trace.reach === 'far' ? `the ${trace.minDist} tokens before each token` : '',
+  trace.skipFirst ? 'the first token' : '',
+  trace.skipSpecial ? 'template tokens' : '',
+].filter(Boolean).join(', '));
+
+// The heads that read the target message most.
 const topHeads = computed(() => {
   const r = span.result;
   if (!r) return [];
   const all: { li: number; h: number; v: number }[] = [];
-  r.layers.forEach((L, li) => L.span.forEach((v, h) => all.push({ li, h, v })));
+  r.layers.forEach((L, li) => L.share.forEach((v, h) => all.push({ li, h, v })));
   return all.sort((a, b) => b.v - a.v).slice(0, 8).map(x => ({ ...x, label: `L${r.layers[x.li].layer} H${x.h}` }));
-});
-
-const summary = computed(() => {
-  const r = span.result;
-  if (!r) return null;
-  return { span: overall(r, 'span'), rest: overall(r, 'rest'), ratio: overall(r, 'ratio') };
 });
 
 function showLines() {
   span.showLines = true;
   document.querySelector('.conv')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
-
-const replyTokens = computed({
-  get: () => span.replyTokens,
-  set: (v: number) => { span.replyTokens = Math.max(1, Math.min(512, Math.round(v) || 1)); },
-});
 </script>
 
 <template>
-  <section class="stage-section">
-    <header class="section-head">
-      <h2>Attention on a span</h2>
-      <div v-if="span.result" class="seg-toggle" role="group" aria-label="What to show">
-        <button v-for="m in METRICS" :key="m.key" type="button" :class="{ on: span.metric === m.key }"
-                @click="span.metric = m.key">{{ m.label }}</button>
-      </div>
-    </header>
+  <StageSection id="span" title="Where a span reads from">
     <p class="hint explain">
-      How much the reply reads from a stretch of text, such as an instruction injected into a tool result,
-      for every layer and head: the share of the attention of its first tokens that lands on the span,
-      compared with the rest of the span's message.
+      Mark some text, such as a sentence of the reply, to see where it came from: which earlier messages its tokens
+      read, and which heads do the reading.
       <template v-if="span.start == null">
-        <strong>Drag across text in the conversation</strong> (or shift-click its first and last token) to mark a span.
+        <strong>Drag across text in the conversation</strong> (or shift-click its first and last token).
       </template>
       <template v-else>
-        The conversation above draws lines from the reply's tokens to the span, more opaque for more attention;
-        pick a head below to see its lines alone.
+        The conversation above draws lines from the span back to what it reads, more opaque for more attention.
       </template>
     </p>
 
     <p v-if="span.problem" class="hint warn">{{ span.problem }}</p>
 
-    <template v-if="span.result && summary">
+    <template v-if="span.result">
       <ul class="span-facts">
-        <li>Span <mark>{{ span.result.label }}</mark> in the {{ span.result.role }}, {{ span.result.spanLen }} tokens</li>
-        <li>Rest of the message: {{ span.result.restLen }} tokens</li>
-        <li><label>Reply tokens measured
-          <input v-model.number.lazy="replyTokens" type="number" min="1" max="512" class="text-input"></label>
-          <template v-if="span.result.queries < span.replyTokens"> (the reply has {{ span.result.queries }})</template>
-        </li>
+        <li>Span <mark>{{ span.result.label }}</mark> in {{ span.result.role }}, {{ span.result.queries }} tokens</li>
       </ul>
+
+      <h3 class="span-sub">Which messages it reads</h3>
+      <p class="hint">
+        Share of the span's attention, averaged over its tokens and every head. Not counted: {{ leftOut || 'nothing' }}
+        (see the trace settings above) — {{ fmtPct(Math.max(0, 1 - counted)) }} of the attention.
+        Click a message to see which heads read it.
+      </p>
+      <div class="msg-bars">
+        <button v-for="b in bars" :key="b.seg" type="button" class="msg-bar" :class="[`role-${b.role}`, { on: b.seg === span.targetSeg }]"
+                @click="span.target = b.seg">
+          <span class="msg-bar-label">{{ b.label }}</span>
+          <span class="msg-bar-track"><span class="msg-bar-fill" :style="{ width: b.width }"></span></span>
+          <span class="msg-bar-value">{{ fmtPct(b.share) }}</span>
+        </button>
+      </div>
+
+      <h3 class="span-sub">Which heads read {{ span.result.target }}</h3>
       <p class="span-summary">
-        Averaged over every head, the reply puts <strong>{{ fmtPct(summary.span) }}</strong> of its attention on the span
-        and <strong>{{ fmtPct(summary.rest) }}</strong> on the rest of the message:
-        <strong>{{ factor(summary.ratio) }}</strong> per token.
+        Averaged over every head, the span puts <strong>{{ fmtPct(overall(span.result)) }}</strong> of its attention on
+        {{ span.result.target }}.
       </p>
       <div class="span-heads">
-        <span class="legend-label">Strongest on the span:</span>
+        <span class="legend-label">Strongest:</span>
         <button v-for="t in topHeads" :key="t.label" type="button" class="series" style="--sc: var(--heat)"
-                :title="`Trace with ${t.label} alone`" @click="trace.focusHead(t.li, t.h)">{{ t.label }} {{ fmtPct(t.v) }}</button>
+                :title="`Show the lines of ${t.label} alone`" @click="trace.focusHead(t.li, t.h); showLines()">{{ t.label }} {{ fmtPct(t.v) }}</button>
       </div>
       <div class="span-actions">
         <button type="button" class="ghost small" @click="span.pin()"
@@ -116,18 +102,18 @@ const replyTokens = computed({
       </div>
 
       <div class="head-grids">
-        <HeadGrid v-if="pinnedRows && span.comparable" :rows="pinnedRows" :format="fmt" :diverging="span.metric === 'ratio'"
-                  :title="`Pinned — ${span.pinnedLabel}`" @cell="trace.focusHead" />
-        <HeadGrid v-if="current" :rows="current" :format="fmt" :diverging="span.metric === 'ratio'"
-                  :title="span.pinned && span.comparable ? `Now — “${span.result.label}” (${span.result.role})` : undefined"
-                  @cell="trace.focusHead" />
+        <HeadGrid v-if="pinnedRows && span.comparable" :rows="pinnedRows" :format="fmtPct"
+                  :title="`Pinned — ${span.pinnedLabel}`" @cell="(li, h) => { trace.focusHead(li, h); showLines(); }" />
+        <HeadGrid v-if="current" :rows="current" :format="fmtPct"
+                  :title="span.pinned && span.comparable ? `Now — ${span.currentLabel}` : undefined"
+                  @cell="(li, h) => { trace.focusHead(li, h); showLines(); }" />
         <HeadGrid v-if="diffRows" :rows="diffRows" :format="fmtDiff" diverging
-                  title="Now minus pinned" @cell="trace.focusHead" />
+                  title="Now minus pinned" @cell="(li, h) => { trace.focusHead(li, h); showLines(); }" />
       </div>
       <p v-if="span.pinned && !span.comparable" class="hint">
-        The pinned span is from {{ span.pinnedLabel }}; it can only be compared with a run of the same model.
+        Pinned: {{ span.pinnedLabel }}. It can only be compared with a run of the same model.
       </p>
     </template>
     <p v-else-if="span.pinned" class="hint">Pinned: {{ span.pinnedLabel }}. Mark a span to compare with it.</p>
-  </section>
+  </StageSection>
 </template>

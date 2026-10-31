@@ -283,6 +283,18 @@ code { font-variation-settings: 'MONO' 1; font-size: 0.9em; }
   margin-bottom: 6px;
 }
 .section-head h2 { margin: 0; font-size: 1.25rem; }
+.section-toggle {
+  display: inline-flex; align-items: center; gap: 6px; padding: 0; border: none; background: none;
+  color: inherit; font: inherit; letter-spacing: inherit; cursor: pointer;
+}
+.section-toggle:hover:not(:disabled) { background: none; color: var(--action); }
+.section-toggle .chevron {
+  width: 0.7em; height: 0.7em; fill: none; stroke: currentColor; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round; transform: rotate(90deg); transition: transform 0.15s ease;
+}
+.section-toggle[aria-expanded="false"] .chevron { transform: none; }
+.stage-section.folded + .stage-section { margin-top: 20px; }
+.stage-section.folded .section-head { margin-bottom: 0; }
 .explain { margin: 0 0 14px; color: var(--muted); font-size: 0.85rem; max-width: 52em; }
 
 /* Run facts: model, lens, layer count, … */
@@ -563,6 +575,22 @@ button.small { padding: 2px 8px; font-size: 0.75rem; }
   text-decoration: underline 2px var(--heat-neg); text-underline-offset: 4px; white-space: pre-wrap; }
 .span-facts .text-input { width: 4rem; padding: 2px 6px; }
 .span-summary { margin: 0 0 12px; font-size: 0.95rem; }
+.span-sub { margin: 18px 0 4px; font-size: 1rem; font-weight: 650; }
+.msg-bars { display: flex; flex-direction: column; gap: 4px; max-width: 40em; margin: 8px 0 4px; }
+.msg-bar {
+  display: grid; grid-template-columns: 9em 1fr 4em; align-items: center; gap: 10px;
+  padding: 3px 8px; border: 1px solid transparent; border-radius: var(--radius-s);
+  background: none; color: var(--ink); font: inherit; font-size: 0.85rem; text-align: left;
+}
+.msg-bar:hover:not(:disabled) { background: var(--surface-2); }
+.msg-bar.on { border-color: var(--rule-strong); background: var(--surface-2); font-weight: 600; }
+.msg-bar-track { height: 10px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+.msg-bar-fill { display: block; height: 100%; background: var(--rule-strong); }
+.msg-bar.role-system .msg-bar-fill { background: var(--role-system); }
+.msg-bar.role-user .msg-bar-fill { background: var(--role-user); }
+.msg-bar.role-assistant .msg-bar-fill { background: var(--role-assistant); }
+.msg-bar.role-tool .msg-bar-fill { background: var(--role-tool); }
+.msg-bar-value { text-align: right; font-variant-numeric: tabular-nums; }
 .span-summary strong { font-variant-numeric: tabular-nums; }
 .span-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
 .span-heads { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; font-size: 0.8rem; }

@@ -8,13 +8,14 @@ import { seriesColor, useTraceStore } from '../stores/trace';
 import { useSpanStore } from '../stores/span';
 import { fmtPct } from '../lib/format';
 import ConversationView from './ConversationView.vue';
+import StageSection from './StageSection.vue';
 
 const chat = useChatStore();
 const trace = useTraceStore();
 const span = useSpanStore();
 const spanLines = computed(() => {
   const f = span.showLines ? span.flow : null;
-  return f && { heads: f.heads, max: Math.max(...f.links.map(l => l.w), 0), tokens: f.given.size };
+  return f && { heads: f.heads, max: Math.max(...f.links.map(l => l.w), 0) };
 });
 
 const facts = computed(() => {
@@ -40,11 +41,10 @@ const nHits = computed(() => trace.trace.hits.size);
 </script>
 
 <template>
-  <section class="stage-section">
-    <header class="section-head">
-      <h2>Attention trace</h2>
+  <StageSection id="trace" title="Attention trace">
+    <template #head>
       <ul class="facts"><li v-for="f in facts" :key="f">{{ f }}</li></ul>
-    </header>
+    </template>
     <p class="hint explain">
       Click a token to trace where it reads from. Shading and arcs show the keys it attends to,
       colored by {{ trace.layerSel < 0 ? 'layer' : 'head' }}; stronger attention is more opaque.
@@ -119,9 +119,9 @@ const nHits = computed(() => trace.trace.hits.size);
 
     <p class="trace-status hint">
       <template v-if="spanLines">
-        Lines from the reply's first {{ spanLines.tokens }} tokens to the <span class="swatch-span">marked span</span>,
-        {{ spanLines.heads }}: the more opaque, the more attention (the strongest line is {{ fmtPct(spanLines.max) }}).
-        Reply tokens are shaded by how much they read the span, span tokens by how much they are read.
+        Where the <span class="swatch-span">marked span</span> reads from, {{ spanLines.heads }}: lines from its tokens
+        back to the tokens they read, the more opaque the more attention (the strongest line is {{ fmtPct(spanLines.max) }}).
+        What it reads is shaded by how much. The trace settings apply (what to look at, ignored tokens).
         Click a token to see its own trace again.
       </template>
       <template v-else-if="trace.selPos != null">
@@ -137,5 +137,5 @@ const nHits = computed(() => trace.trace.hits.size);
     </p>
 
     <ConversationView />
-  </section>
+  </StageSection>
 </template>

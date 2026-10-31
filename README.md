@@ -39,16 +39,19 @@ token slower (on Qwen3-0.6B, CPU: 2×, 3.4× and 6.7× the unpatched time).
 The unpatched graphs share the `transformers-cache` with logitlens-web and the token probability
 explorer, so models are only downloaded once.
 
-## Attention on a span
+## Where a span reads from
 
-Mark a stretch of text (drag across it, or shift-click its first and last token), such as an
-instruction injected into a tool result. For every layer and head, the panel shows the share of the
-attention of the reply's first tokens (32 by default) that lands on the span, on the rest of its
-message, and the two compared per token. This is the per-head "probe attention" used in attention
-studies of prompt injection, for one conversation. Pin a result, change the conversation (move the
-instruction from the tool result into the user or system message, reword it) and trace again to
-see both side by side with their difference. The shares are slightly low: only the strongest keys of
-each head are kept (see above).
+Mark a stretch of text (drag across it, or shift-click its first and last token), such as a
+sentence of the reply. The conversation then draws lines from its tokens back to the tokens they
+read, and the panel below shows the share of the span's attention on each earlier message and, for
+a message you pick, which layers and heads do that reading. Mark the reply's "your account is
+locked" and see whether it reads the user's request or the instruction injected into the tool
+result. Pin a result, change the conversation (move the instruction into the system prompt, reword
+it) and trace again to compare the two head grids with their difference.
+
+What is read is filtered as in the trace (by default other messages only, without the first token
+and template tokens). Shares are raw attention; the lines use the trace's weights (above each key's
+usual share, by default). The shares are slightly low: only the strongest keys of each head are kept.
 
 ## Tool calls
 

@@ -2,64 +2,67 @@ import { defineStore } from 'pinia';
 import { computed, ref, shallowRef, watch } from 'vue';
 import { modelLabel } from '../lib/config';
 import { decode } from './model';
-import { useChatStore, type AttnRun } from './chat';
+import { useChatStore, type AttnRun, type Segment } from './chat';
 import { useTraceStore } from './trace';
 
-// Attention from a reply to a marked span, per layer and head: how much of
-// what the reply reads comes from, say, an instruction injected into a tool
-// result, compared with the rest of that message. This is the per-head
-// "probe attention" of attention studies of prompt injection, for one
-// conversation. A run can be pinned, and compared with the next one (the same
-// instruction placed in the data or in the instructions, before and after an
-// edit, …).
+// Where a marked stretch of text reads from: the attention of its tokens,
+// summed by earlier message, per layer and head, and drawn as lines back to
+// the tokens it reads. Mark a sentence of the reply to see whether it came
+// from the user's request, the system prompt or an instruction injected into
+// a tool result. A result can be pinned and compared with the next run (the
+// same instruction placed elsewhere, reworded, …).
+//
+// The tokens read are filtered as in the trace (other messages only, no first
+// token or template tokens, by default). Shares are raw attention, so they add
+// up; the lines use the trace's weights (above each key's usual share, by
+// default), so resting spots don't drown them.
 
-export type SpanMetric = 'span' | 'rest' | 'ratio';
-
-/** Per layer: mean attention share of each head, over the reply's queries. */
+/** Per layer: each head's share of the span's attention on the target message. */
 export interface SpanLayer {
   layer: number;
-  span: Float32Array; // [H] share of attention on the span
-  rest: Float32Array; // [H] share on the rest of the span's message
-}
-
-/** Reply token → span token links, averaged over the heads in view, for drawing. */
-export interface SpanFlow {
-  links: { from: number; to: number; w: number }[]; // from: the reply token produced, to: a span token
-  received: Map<number, number>;  // span token → attention it gets, mean over the reply tokens
-  given: Map<number, number>;     // reply token → its attention on the whole span
-  heads: string;                  // which heads, as a phrase: "averaged over all 448 heads"
+  share: Float32Array; // [H]
 }
 
 export interface SpanResult {
   model: string;
-  label: string;      // the span's text
-  role: string;       // the span's message
-  spanLen: number;
-  restLen: number;
+  label: string;       // the span's text
+  role: string;        // the span's message
+  target: string;      // the message the grid measures
   queries: number;
   layers: SpanLayer[];
 }
 
-// Attention per token of the span over attention per token of the rest, as log2.
-const EPS = 1e-6;
-export function densityRatio(r: SpanResult, li: number, h: number): number {
-  const L = r.layers[li];
-  if (!r.restLen) return 0;
-  return Math.log2((L.span[h] / r.spanLen + EPS) / (L.rest[h] / r.restLen + EPS));
+/** Span token → earlier token links, averaged over the heads in view, for drawing. */
+export interface SpanFlow {
+  links: { from: number; to: number; w: number }[]; // from: a span token, to: a token it reads
+  received: Map<number, number>; // token read → attention from the span, mean over its tokens
+  given: Map<number, number>;    // span token → attention it puts on what the filters allow
+  heads: string;                 // which heads, as a phrase: "averaged over all 448 heads"
 }
 
-export function metricAt(r: SpanResult, metric: SpanMetric, li: number, h: number): number {
-  if (metric === 'span') return r.layers[li].span[h];
-  if (metric === 'rest') return r.layers[li].rest[h];
-  return densityRatio(r, li, h);
+/** Share of the span's attention per earlier message. */
+export interface MessageShare {
+  seg: number;  // index into run.segs
+  label: string;
+  role: Segment['role'];
+  share: number;
+}
+
+const ROLE_LABEL: Record<Segment['role'], string> = {
+  system: 'System', user: 'User', assistant: 'Assistant', tool: 'Tool result', prompt: 'Generation prompt',
+};
+
+/** Message labels as the conversation view numbers them (User 1, Assistant 2, …). */
+export function segLabels(r: AttnRun): string[] {
+  const n: Record<string, number> = {};
+  return r.segs.map(s => (s.role === 'system' || s.role === 'prompt'
+    ? ROLE_LABEL[s.role] : `${ROLE_LABEL[s.role]} ${n[s.role] = (n[s.role] ?? 0) + 1}`));
 }
 
 /** Mean over every head of every layer. */
-export function overall(r: SpanResult, metric: SpanMetric): number {
+export function overall(r: SpanResult): number {
   let sum = 0, n = 0;
-  r.layers.forEach((L, li) => {
-    for (let h = 0; h < L.span.length; h++) { sum += metricAt(r, metric, li, h); n++; }
-  });
+  for (const L of r.layers) for (const v of L.share) { sum += v; n++; }
   return n ? sum / n : 0;
 }
 
@@ -70,14 +73,13 @@ export const useSpanStore = defineStore('span', () => {
   const start = ref<number | null>(null); // inclusive token positions
   const end = ref<number | null>(null);
   let anchor: number | null = null;       // first end of a shift-click pair
-  const replyTokens = ref(32);            // the reply's first N tokens are the queries
-  const metric = ref<SpanMetric>('span');
+  const target = ref<number | null>(null); // segment the head grid measures; null: the most-read one
   const pinned = shallowRef<SpanResult | null>(null);
-  // The conversation shows lines to the span (true) or the clicked token's trace.
+  // The conversation shows lines from the span (true) or the clicked token's trace.
   const showLines = ref(true);
 
   // Positions change with the conversation; a new run starts without a span.
-  watch(() => chat.run, () => { start.value = end.value = null; anchor = null; });
+  watch(() => chat.run, () => { start.value = end.value = null; anchor = null; target.value = null; });
 
   // Leading and trailing whitespace and template tokens are left out (a drag
   // to the end of a line picks up its newline).
@@ -90,6 +92,7 @@ export const useSpanStore = defineStore('span', () => {
     while (s1 > s0 && blank(s1)) s1--;
     start.value = s0;
     end.value = s1;
+    target.value = null;
     showLines.value = true;
   }
 
@@ -107,71 +110,87 @@ export const useSpanStore = defineStore('span', () => {
   function clear() {
     start.value = end.value = null;
     anchor = null;
+    target.value = null;
   }
 
-  // The reply whose attention is measured: the last assistant message.
-  const reply = computed(() => {
-    const r = chat.run;
-    if (!r) return null;
-    for (let i = r.segs.length - 1; i >= 0; i--) if (r.segs[i].role === 'assistant') return r.segs[i];
-    return null;
-  });
-
-  // Query positions: the attention that produced each of the reply's first N
-  // tokens of text is read one position earlier.
-  function queries(r: AttnRun, after: number): number[] {
-    const seg = reply.value;
-    if (!seg) return [];
-    const out: number[] = [];
-    for (let p = seg.start; p < seg.end && out.length < replyTokens.value; p++) {
-      if (r.content[p] && !trace.special[p] && p - 1 > after) out.push(p - 1);
-    }
-    return out;
-  }
-
-  // The span, the rest of its message, and the queries measured.
+  // The span's tokens of text, and where their attention is read: one
+  // position earlier when tracing what produced a token, as in the trace.
   const measured = computed(() => {
     const r = chat.run;
     if (!r || start.value == null || end.value == null || end.value >= r.S) return null;
     const s0 = start.value, s1 = end.value;
-    const seg = r.segs[r.segOf[s0]];
-    // the rest of the span's message: its text outside the span
-    const inRest = (p: number) => p >= seg.start && p < seg.end && (p < s0 || p > s1) && !!r.content[p] && !trace.special[p];
-    let restLen = 0;
-    for (let p = seg.start; p < seg.end; p++) if (inRest(p)) restLen++;
-    const qs = queries(r, Math.max(s1, seg.end - 1));
-    return qs.length ? { r, s0, s1, seg, inRest, restLen, qs } : null;
+    const toks: number[] = [];
+    for (let p = s0; p <= s1; p++) if (r.content[p] && !trace.special[p]) toks.push(p);
+    const pairs = toks.map(p => ({ tok: p, q: trace.produced ? p - 1 : p })).filter(x => x.q >= 0);
+    // what the span reads: allowed by the trace's filters, and outside the span itself
+    const reads = (q: number, key: number) => (key < s0 || key > s1) && trace.allowed(q, key);
+    return pairs.length ? { r, s0, s1, pairs, reads } : null;
   });
 
-  const result = computed<SpanResult | null>(() => {
+  // Share of the span's attention per message, every head weighted equally.
+  const messages = computed<MessageShare[]>(() => {
     const m = measured.value;
-    if (!m) return null;
-    const { r, s0, s1, seg, inRest, restLen, qs } = m;
-    const layers = r.layers.map(({ layer, H, K, vals, idx }) => {
-      const span = new Float32Array(H), rest = new Float32Array(H);
-      for (const q of qs) {
+    if (!m) return [];
+    const { r, pairs, reads } = m;
+    const share = new Float64Array(r.segs.length);
+    let heads = 0;
+    for (const { H, K, vals, idx } of r.layers) {
+      heads += H;
+      for (const { q } of pairs) {
         for (let h = 0; h < H; h++) {
           const base = (q * H + h) * K;
           for (let k = 0; k < K; k++) {
             const w = vals[base + k];
             if (w < 1e-4) break;
             const key = idx[base + k];
-            if (key >= s0 && key <= s1) span[h] += w;
-            else if (inRest(key)) rest[h] += w;
+            if (reads(q, key)) share[r.segOf[key]] += w;
           }
         }
       }
-      for (let h = 0; h < H; h++) { span[h] /= qs.length; rest[h] /= qs.length; }
-      return { layer, span, rest };
+    }
+    const labels = segLabels(r);
+    const out: MessageShare[] = [];
+    share.forEach((v, si) => {
+      if (v > 0) out.push({ seg: si, label: labels[si], role: r.segs[si].role, share: v / (heads * pairs.length) });
+    });
+    return out;
+  });
+
+  const targetSeg = computed(() => {
+    if (target.value != null && messages.value.some(x => x.seg === target.value)) return target.value;
+    return [...messages.value].sort((a, b) => b.share - a.share)[0]?.seg ?? null;
+  });
+
+  const result = computed<SpanResult | null>(() => {
+    const m = measured.value;
+    const t = targetSeg.value;
+    if (!m || t == null) return null;
+    const { r, s0, s1, pairs, reads } = m;
+    const tSeg = r.segs[t];
+    const layers = r.layers.map(({ layer, H, K, vals, idx }) => {
+      const share = new Float32Array(H);
+      for (const { q } of pairs) {
+        for (let h = 0; h < H; h++) {
+          const base = (q * H + h) * K;
+          for (let k = 0; k < K; k++) {
+            const w = vals[base + k];
+            if (w < 1e-4) break;
+            const key = idx[base + k];
+            if (key >= tSeg.start && key < tSeg.end && reads(q, key)) share[h] += w;
+          }
+        }
+      }
+      for (let h = 0; h < H; h++) share[h] /= pairs.length;
+      return { layer, share };
     });
     const text = r.ids.slice(s0, s1 + 1).map(decode).join('').replace(/\s+/g, ' ').trim();
+    const labels = segLabels(r);
     return {
       model: r.model,
       label: text.length > 80 ? `${text.slice(0, 77)}…` : text,
-      role: seg.role === 'tool' ? 'tool result' : seg.role,
-      spanLen: s1 - s0 + 1,
-      restLen,
-      queries: qs.length,
+      role: labels[r.segOf[s0]],
+      target: labels[t],
+      queries: pairs.length,
       layers,
     };
   });
@@ -182,22 +201,22 @@ export const useSpanStore = defineStore('span', () => {
   const flow = computed<SpanFlow | null>(() => {
     const m = measured.value;
     if (!m) return null;
-    const { r, s0, s1, qs } = m;
-    const n = s1 - s0 + 1;
-    const acc = new Float64Array(qs.length * n);
+    const { r, pairs, reads } = m;
+    const acc = new Map<number, number>(); // pair index * S + key → summed weight
     let heads = 0;
     r.layers.forEach(({ H, K, vals, idx }, li) => {
       if (trace.layerSel >= 0 && li !== trace.layerSel) return;
       for (let h = 0; h < H; h++) {
         if (trace.layerSel >= 0 && trace.hidden.has(h)) continue;
         heads++;
-        qs.forEach((q, qi) => {
+        pairs.forEach(({ q }, pi) => {
           const base = (q * H + h) * K;
           for (let k = 0; k < K; k++) {
-            const w = vals[base + k];
-            if (w < 1e-4) break;
+            if (vals[base + k] < 1e-4) break;
             const key = idx[base + k];
-            if (key >= s0 && key <= s1) acc[qi * n + key - s0] += w;
+            if (!reads(q, key)) continue;
+            const w = trace.weight(li, h, key, vals[base + k]);
+            if (w > 0) acc.set(pi * r.S + key, (acc.get(pi * r.S + key) ?? 0) + w);
           }
         });
       }
@@ -205,17 +224,13 @@ export const useSpanStore = defineStore('span', () => {
     if (!heads) return null;
     const links: SpanFlow['links'] = [];
     const received = new Map<number, number>(), given = new Map<number, number>();
-    qs.forEach((q, qi) => {
-      let total = 0;
-      for (let j = 0; j < n; j++) {
-        const w = acc[qi * n + j] / heads;
-        if (w <= 0) continue;
-        total += w;
-        links.push({ from: q + 1, to: s0 + j, w });
-        received.set(s0 + j, (received.get(s0 + j) ?? 0) + w / qs.length);
-      }
-      given.set(q + 1, total);
-    });
+    for (const [code, sum] of acc) {
+      const pi = Math.floor(code / r.S), key = code % r.S, w = sum / heads;
+      const from = pairs[pi].tok;
+      links.push({ from, to: key, w });
+      received.set(key, (received.get(key) ?? 0) + w / pairs.length);
+      given.set(from, (given.get(from) ?? 0) + w);
+    }
     const L = trace.layerSel >= 0 ? r.layers[trace.layerSel] : null;
     const shown = L ? L.H - [...trace.hidden].filter(h => h < L.H).length : 0;
     return {
@@ -228,19 +243,16 @@ export const useSpanStore = defineStore('span', () => {
 
   // Why there is no result, for the panel.
   const problem = computed(() => {
-    const r = chat.run;
-    if (!r || start.value == null || end.value == null) return '';
-    if (!reply.value) return 'The conversation has no reply to measure.';
-    if (r.segOf[start.value] !== r.segOf[end.value]) return 'Mark a span within one message.';
-    if (end.value >= reply.value.start) return 'Mark a span before the last reply: its attention to the span is what is measured.';
-    return result.value ? '' : 'The reply has no tokens after the span.';
+    if (start.value == null) return '';
+    if (!measured.value) return 'The span has no text tokens.';
+    return messages.value.length ? '' : 'The span reads nothing the filters allow. Widen "Look at" in the trace settings.';
   });
 
   // A pinned result can be compared with the current one when the heads match.
   const comparable = computed(() => {
     const a = pinned.value, b = result.value;
     return !!a && !!b && a.model === b.model && a.layers.length === b.layers.length
-      && a.layers.every((L, i) => L.span.length === b.layers[i].span.length);
+      && a.layers.every((L, i) => L.share.length === b.layers[i].share.length);
   });
 
   function pin() {
@@ -251,10 +263,12 @@ export const useSpanStore = defineStore('span', () => {
     pinned.value = null;
   }
 
-  const pinnedLabel = computed(() => (pinned.value ? `${modelLabel(pinned.value.model)}: “${pinned.value.label}” (${pinned.value.role})` : ''));
+  const describe = (x: SpanResult) => `“${x.label}” (${x.role}) reading ${x.target}`;
+  const pinnedLabel = computed(() => (pinned.value ? `${modelLabel(pinned.value.model)}: ${describe(pinned.value)}` : ''));
+  const currentLabel = computed(() => (result.value ? describe(result.value) : ''));
 
   return {
-    start, end, replyTokens, metric, pinned, showLines, result, flow, problem, comparable, pinnedLabel,
+    start, end, target, targetSeg, pinned, showLines, messages, result, flow, problem, comparable, pinnedLabel, currentLabel,
     mark, shiftClick, clear, pin, unpin,
   };
 });
