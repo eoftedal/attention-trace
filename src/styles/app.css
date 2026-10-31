@@ -14,6 +14,7 @@
   --muted: #5b6875;
   --faint: #8a96a3;
   --heat: #3346c8;
+  --heat-neg: #c2410c;
   --heat-ink: #ffffff;
   --select: #b0177a;
   --select-ink: #ffffff;
@@ -46,6 +47,7 @@
   --muted: #8d9aa7;
   --faint: #5d6b79;
   --heat: #6f82ff;
+  --heat-neg: #ff9a5c;
   --heat-ink: #0c141b;
   --select: #ff5fb7;
   --select-ink: #1a0712;
@@ -445,6 +447,8 @@ textarea:disabled { opacity: 0.7; }
 .tok.special { color: var(--faint); font-size: 0.75em; }
 .tok.hit { color: var(--ink); }
 .tok.src { box-shadow: inset 0 0 0 1.5px var(--ink-2); }
+.tok.span { text-decoration: underline 2px var(--heat-neg); text-underline-offset: 4px; }
+.swatch-span { text-decoration: underline 2px var(--heat-neg); text-underline-offset: 4px; color: var(--ink); }
 .tok.query, .tok.query:hover { box-shadow: inset 0 0 0 2px var(--select); }
 .swatch-query { padding: 0 4px; border-radius: var(--radius-s); box-shadow: inset 0 0 0 2px var(--select); white-space: pre; }
 .tok.sel, .tok.sel:hover { background: var(--select); color: var(--select-ink); box-shadow: none; }
@@ -527,9 +531,9 @@ button.small { padding: 2px 8px; font-size: 0.75rem; }
   padding: 0;
   border: none;
   border-radius: 2px;
-  background: color-mix(in srgb, var(--heat) var(--p, 0%), var(--surface-2));
+  background: color-mix(in srgb, var(--hc, var(--heat)) var(--p, 0%), var(--surface-2));
 }
-.hm-cell:hover:not(:disabled) { background: color-mix(in srgb, var(--heat) var(--p, 0%), var(--surface-2)); outline: 1px solid var(--ink); }
+.hm-cell:hover:not(:disabled) { background: color-mix(in srgb, var(--hc, var(--heat)) var(--p, 0%), var(--surface-2)); outline: 1px solid var(--ink); }
 .hm-cell.on { box-shadow: 0 0 0 2px var(--select); }
 
 /* ── Run loader ───────────────────────────────────────────────── */
@@ -552,3 +556,20 @@ button.small { padding: 2px 8px; font-size: 0.75rem; }
 }
 @keyframes arc-pulse { 0%, 70%, 100% { opacity: 0.08; } 30% { opacity: 0.6; } }
 @media (prefers-reduced-motion: reduce) { .ghost-arcs span { animation: none; opacity: 0.25; } }
+
+/* ── Attention on a span ──────────────────────────────────────── */
+.span-facts { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0 0 10px; padding: 0; list-style: none; font-size: 0.85rem; }
+.span-facts mark { padding: 0 4px; border-radius: var(--radius-s); background: none; color: var(--ink);
+  text-decoration: underline 2px var(--heat-neg); text-underline-offset: 4px; white-space: pre-wrap; }
+.span-facts .text-input { width: 4rem; padding: 2px 6px; }
+.span-summary { margin: 0 0 12px; font-size: 0.95rem; }
+.span-summary strong { font-variant-numeric: tabular-nums; }
+.span-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+.span-heads { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; font-size: 0.8rem; }
+.head-grids { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: flex-start; }
+.head-grid { margin: 0; max-width: 100%; }
+.head-grid figcaption { margin: 0 0 4px; font-size: 0.8rem; font-weight: 600; color: var(--muted); max-width: 32em; }
+.grid-scale { display: flex; align-items: center; gap: 6px; margin: 2px 0 0; font-size: 0.75rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.grid-scale .swatch { display: inline-block; width: 12px; height: 10px; border-radius: 2px; }
+.grid-scale .swatch.pos { background: var(--heat); }
+.grid-scale .swatch.neg { background: var(--heat-neg); }

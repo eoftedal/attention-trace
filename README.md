@@ -39,6 +39,17 @@ token slower (on Qwen3-0.6B, CPU: 2×, 3.4× and 6.7× the unpatched time).
 The unpatched graphs share the `transformers-cache` with logitlens-web and the token probability
 explorer, so models are only downloaded once.
 
+## Attention on a span
+
+Mark a stretch of text (drag across it, or shift-click its first and last token), such as an
+instruction injected into a tool result. For every layer and head, the panel shows the share of the
+attention of the reply's first tokens (32 by default) that lands on the span, on the rest of its
+message, and the two compared per token. This is the per-head "probe attention" used in attention
+studies of prompt injection, for one conversation. Pin a result, change the conversation (move the
+instruction from the tool result into the user or system message, reword it) and trace again to
+see both side by side with their difference. The shares are slightly low: only the strongest keys of
+each head are kept (see above).
+
 ## Tool calls
 
 A conversation can contain fake tool calls (`fetch_url`) and their results; nothing is ever called.

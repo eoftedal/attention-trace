@@ -13,6 +13,7 @@ import RunLoader from './components/RunLoader.vue';
 import TraceCard from './components/TraceCard.vue';
 import SourcesCard from './components/SourcesCard.vue';
 import HeadMapCard from './components/HeadMapCard.vue';
+import SpanCard from './components/SpanCard.vue';
 
 const model = useModelStore();
 const chat = useChatStore();
@@ -87,6 +88,7 @@ watch(collapsed, v => {
       <template v-if="chat.run">
         <TraceCard />
         <HeadMapCard />
+        <SpanCard />
         <SourcesCard />
       </template>
       <RunLoader v-else-if="chat.busy" />
