@@ -62,7 +62,8 @@ export const useTraceStore = defineStore('trace', () => {
   const skipSpecial = ref(true); // template tokens: <|im_start|>, role names, newlines between messages
   // Heads with nothing to do park their attention on a few early tokens (the
   // first token, newlines and punctuation of the system prompt). Subtracting
-  // what a key gets on average leaves the links that are specific to the query.
+  // what a key gets on average from the other messages leaves the links that
+  // are specific to the query.
   const discount = ref(true);
   const hidden = ref<Set<number>>(new Set()); // series switched off
   const mapScope = ref<'token' | 'message'>('token');
@@ -107,30 +108,50 @@ export const useTraceStore = defineStore('trace', () => {
     return special.value.map((sp, p) => (sp || !r.content[p] ? 1 : 0));
   });
 
-  // Per layer, [H, S]: the mean attention each key gets from the queries that can see it.
-  const baseline = computed(() => {
-    const r = run.value;
-    if (!r) return [];
-    return r.layers.map(({ H, K, vals, idx }) => {
-      const b = new Float32Array(H * r.S);
+  // Per layer, [H, S]: the mean attention each key gets from the queries that
+  // can see it, leaving out the queries of one message. The message being
+  // traced is left out, so that the reading under study does not count as the
+  // key's usual share (a reply reading the password in every token would
+  // otherwise make that reading "usual"). Computed per message as needed.
+  const baselines = new Map<number, Float32Array[]>(); // message left out → per layer
+  let baselinesOf: AttnRun | null = null;
+
+  function baselineFor(seg: number): Float32Array[] {
+    const r = run.value!;
+    if (baselinesOf !== r) { baselines.clear(); baselinesOf = r; }
+    let b = baselines.get(seg);
+    if (b) return b;
+    const s = r.segs[seg];
+    b = r.layers.map(({ H, K, vals, idx }) => {
+      const out = new Float32Array(H * r.S);
       for (let q = 0; q < r.S; q++) {
+        if (q >= s.start && q < s.end) continue;
         for (let h = 0; h < H; h++) {
           const base = (q * H + h) * K;
           for (let k = 0; k < K; k++) {
             const w = vals[base + k];
             if (w < 1e-4) break;
-            b[h * r.S + idx[base + k]] += w;
+            out[h * r.S + idx[base + k]] += w;
           }
         }
       }
-      for (let h = 0; h < H; h++) for (let key = 0; key < r.S; key++) b[h * r.S + key] /= r.S - key;
-      return b;
+      for (let key = 0; key < r.S; key++) {
+        // queries that can see the key (q ≥ key), without those of the message left out
+        const n = r.S - key - Math.max(0, s.end - Math.max(s.start, key));
+        const f = n > 0 ? 1 / n : 0;
+        for (let h = 0; h < H; h++) out[h * r.S + key] *= f;
+      }
+      return out;
     });
-  });
+    baselines.set(seg, b);
+    return b;
+  }
 
-  // The weight a link counts with: raw, or above the key's usual share.
-  function weight(li: number, h: number, key: number, w: number): number {
-    return discount.value ? w - baseline.value[li][h * run.value!.S + key] : w;
+  // The weight a link from query q counts with: raw, or above the key's usual
+  // share from the messages other than q's.
+  function weight(li: number, h: number, q: number, key: number, w: number): number {
+    const r = run.value!;
+    return discount.value ? w - baselineFor(r.segOf[q])[li][h * r.S + key] : w;
   }
 
   const seriesCount = computed(() => {
@@ -169,7 +190,7 @@ export const useTraceStore = defineStore('trace', () => {
           if (vals[base + k] < 1e-4) break; // sorted descending
           const key = idx[base + k];
           if (!allowed(q, key)) continue;
-          const w = weight(li, h, key, vals[base + k]);
+          const w = weight(li, h, q, key, vals[base + k]);
           if (w <= 0) continue;
           if (acc) {
             const prev = acc.get(key) ?? 0;
@@ -243,7 +264,7 @@ export const useTraceStore = defineStore('trace', () => {
           for (let k = 0; k < L.K; k++) {
             if (L.vals[base + k] < 1e-4) break;
             const key = L.idx[base + k];
-            if (allowed(qq, key)) cells[h] += Math.max(0, weight(li, h, key, L.vals[base + k]));
+            if (allowed(qq, key)) cells[h] += Math.max(0, weight(li, h, qq, key, L.vals[base + k]));
           }
         }
       }

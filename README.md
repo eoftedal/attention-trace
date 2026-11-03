@@ -32,8 +32,10 @@ expose their weights. `src/lib/onnxattn.ts` patches the ONNX graph in memory whe
 
 The patched graph also generates normally. During cached decoding the attention outputs are
 meaningless and ignored; after each reply one forward pass over the whole conversation records the
-attention. The longest traceable conversation (1024, 2048 or 4096 tokens) is picked when the model
-is loaded. The attention clones also run while generating, so a longer limit makes every generated
+attention, over the ids the model actually produced (a reply typed or edited by hand is appended to
+the generation prompt as text and tokenized). The longest traceable conversation (1024, 2048 or
+4096 tokens) is picked when the model is loaded. The attention clones also run while generating, so
+a longer limit makes every generated
 token slower (on Qwen3-0.6B, CPU: 2×, 3.4× and 6.7× the unpatched time).
 
 The unpatched graphs share the `transformers-cache` with logitlens-web and the token probability
@@ -50,8 +52,11 @@ result. Pin a result, change the conversation (move the instruction into the sys
 it) and trace again to compare the two head grids with their difference.
 
 What is read is filtered as in the trace (by default other messages only, without the first token
-and template tokens). Shares are raw attention; the lines use the trace's weights (above each key's
-usual share, by default). The shares are slightly low: only the strongest keys of each head are kept.
+and template tokens). Shares are raw attention, by message and per token the span can read in the
+message (a long tool result collects more attention just by being long); the lines use the trace's
+weights (above each key's usual share from the other messages, by default). The panel says how much
+of the span's attention the recorded keys hold: only the strongest keys of each head are kept, and
+the shares are low by whatever fell below them.
 
 ## Tool calls
 

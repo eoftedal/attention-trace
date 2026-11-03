@@ -7,7 +7,7 @@ import {
 import { decodeJson, encodeJson, readHash } from '../lib/hash';
 import { ATTN_IDX, ATTN_VALS } from '../lib/onnxattn';
 import {
-  generate, InterruptableStoppingCriteria, ThinkingBudget, type Tokenizer,
+  generate, inputsFromIds, InterruptableStoppingCriteria, ThinkingBudget, type Tokenizer,
 } from '../lib/transformers';
 import { isSpecialToken, toFloat32 } from '../lib/format';
 import { decode, getModel, getTokenizer, useModelStore } from './model';
@@ -64,6 +64,17 @@ export const hasReasoning = (content: string) => THINK_CLOSE.test(content);
 
 // Generation is cut short through this; one generation runs at a time.
 let stopper: InterruptableStoppingCriteria | null = null;
+
+// The last reply as the model produced it. The trace uses these ids rather
+// than re-tokenizing the reply's text, which can split it differently.
+interface Generated {
+  model: string;
+  key: string;         // conversation signature with the reply added
+  prompt: string;      // the generation prompt it was generated from
+  promptIds: number[];
+  ids: number[];       // the generated tokens, end-of-turn token included
+}
+let generated: Generated | null = null;
 
 export const useChatStore = defineStore('chat', () => {
   const saved = (() => {
@@ -291,19 +302,38 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   // The text of the whole conversation as the model reads it. A final reply
-  // is appended to the generation prompt as it was generated, rather than
-  // re-rendered: templates rewrite or drop the reasoning of a final reply,
-  // and the trace should show the sequence the model actually produced.
-  function conversationText(tok: Tokenizer): { text: string; addGen: boolean } {
+  // is appended to the generation prompt (returned as `prompt`) as text
+  // rather than re-rendered: templates rewrite or drop the reasoning of a
+  // final reply. A reply this page generated is traced from its ids instead
+  // (see `analyze`).
+  function conversationText(tok: Tokenizer): { text: string; addGen: boolean; prompt: string | null } {
     const ts = turns.value;
     const last = ts[ts.length - 1];
-    if (last.role !== 'assistant') return { text: template(tok, ts, true), addGen: true };
-    if (last.toolCalls?.length) return { text: template(tok, ts, false), addGen: false };
+    if (last.role !== 'assistant') return { text: template(tok, ts, true), addGen: true, prompt: null };
+    if (last.toolCalls?.length) return { text: template(tok, ts, false), addGen: false, prompt: null };
     const prompt = template(tok, ts.slice(0, -1), true);
     let reply = last.content.trim();
     const open = openedBy(prompt);
     if (open && reply.startsWith(open)) reply = reply.slice(open.length).replace(/^\n/, '');
-    return { text: prompt + reply, addGen: false };
+    return { text: prompt + reply, addGen: false, prompt };
+  }
+
+  // Marks the generated tokens that are message text: runs of ordinary tokens
+  // between special tokens, without blank tokens at either end (as `segment`
+  // marks the pieces of a message's text).
+  function markGenerated(content: Uint8Array, ids: number[], from: number) {
+    content.fill(0, from);
+    const blank = (p: number) => !decode(ids[p]).trim();
+    for (let p = from; p < ids.length;) {
+      if (isSpecialToken(decode(ids[p]))) { p++; continue; }
+      let q = p;
+      while (q < ids.length && !isSpecialToken(decode(ids[q]))) q++;
+      let a = p, b = q - 1;
+      while (a <= b && blank(a)) a++;
+      while (b >= a && blank(b)) b--;
+      if (a <= b) content.fill(1, a, b + 1);
+      p = q;
+    }
   }
 
   // ── Analysis pass ─────────────────────────────────────────────────
@@ -315,14 +345,21 @@ export const useChatStore = defineStore('chat', () => {
     running.value = true;
     runHint.value = '';
     try {
-      const { text, addGen } = conversationText(tok);
-      const inputs = tok(text, { return_tensors: 'pt', add_special_tokens: false });
+      const conv = conversationText(tok);
+      // The reply as generated, while the conversation still ends with it.
+      const gen = generated && generated.model === model.loadedModel && generated.key === convKey.value
+        && generated.prompt === conv.prompt ? generated : null;
+      const text = gen ? gen.prompt + tok.decode(gen.ids, { skip_special_tokens: false }) : conv.text;
+      const inputs = gen
+        ? inputsFromIds(gen.promptIds.concat(gen.ids))
+        : tok(text, { return_tensors: 'pt', add_special_tokens: false });
       const ids = Array.from(inputs.input_ids.data, Number);
       if (ids.length > model.maxTokens) {
         throw new Error(`The conversation has ${ids.length} tokens; the model was loaded to trace up to ${model.maxTokens}. ` +
           'Pick a longer traceable conversation and reload it.');
       }
-      const { segs, content } = segment(tok, ids, text, addGen);
+      const { segs, content } = segment(tok, ids, text, conv.addGen);
+      if (gen) markGenerated(content, ids, gen.promptIds.length);
       // Let the loader paint before the forward pass starts.
       await new Promise(r => requestAnimationFrame(() => setTimeout(r)));
 
@@ -379,6 +416,7 @@ export const useChatStore = defineStore('chat', () => {
       const text = template(tok, turns.value, true);
       const inputs = tok(text, { return_tensors: 'pt', add_special_tokens: false });
       const promptLen = inputs.input_ids.dims[1];
+      let promptIds = Array.from(inputs.input_ids.data, Number);
       // The patched graph cannot even read a prompt longer than the trace limit.
       if (promptLen > cap) {
         throw new Error(`The conversation has ${promptLen} tokens; the model was loaded for up to ${cap}. ` +
@@ -411,10 +449,13 @@ export const useChatStore = defineStore('chat', () => {
         const soFar = text + tok.decode(newIds, { skip_special_tokens: false }) + cut;
         const more = tok(soFar, { return_tensors: 'pt', add_special_tokens: false });
         const answer = await generate(tok, mdl, more, { ...opts, maxNewTokens: maxNewTokens.value, stoppers: [stopper] });
-        newIds = Array.from(more.input_ids.data, Number).slice(promptLen).concat(answer);
+        const moreIds = Array.from(more.input_ids.data, Number);
+        promptIds = moreIds.slice(0, promptLen); // the answer was generated from this rendering
+        newIds = moreIds.slice(promptLen).concat(answer);
       }
       const reply = replyText(tok, newIds, text);
       turns.value.push({ role: 'assistant', content: reply });
+      generated = { model: useModelStore().loadedModel!, key: convKey.value, prompt: text, promptIds, ids: newIds };
       unfinished = THINK_MARKER.test(reply) && !THINK_CLOSE.test(reply);
     } catch (err) {
       runHint.value = `Error: ${(err as Error).message}`;

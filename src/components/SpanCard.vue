@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { fmtPct } from '../lib/format';
-import { overall, useSpanStore, type SpanResult } from '../stores/span';
+import { overall, useSpanStore, type MessageShare, type SpanResult } from '../stores/span';
 import { useTraceStore } from '../stores/trace';
 import HeadGrid from './HeadGrid.vue';
 import StageSection from './StageSection.vue';
@@ -20,12 +20,17 @@ const diffRows = computed(() => {
   return current.value.map((row, li) => ({ layer: row.layer, cells: row.cells.map((v, h) => v - a[li].cells[h]) }));
 });
 
-// Messages by share; what the filters leave out is the rest.
+// Messages by share, in total or per readable token of the message.
+const by = ref<'total' | 'token'>('total');
 const bars = computed(() => {
-  const max = Math.max(...span.messages.map(m => m.share), 1e-9);
-  return span.messages.map(m => ({ ...m, width: `${(m.share / max) * 100}%` }));
+  const of = (m: MessageShare) => (by.value === 'token' ? m.perToken : m.share);
+  const max = Math.max(...span.messages.map(of), 1e-9);
+  return span.messages.map(m => ({ ...m, width: `${(of(m) / max) * 100}%` }));
 });
+// Of the span's attention: on tokens the filters leave out, and below the recorded top-K keys.
 const counted = computed(() => span.messages.reduce((s, m) => s + m.share, 0));
+const filtered = computed(() => Math.max(0, span.mass.captured - counted.value));
+const lost = computed(() => Math.max(0, 1 - span.mass.captured));
 const leftOut = computed(() => [
   trace.reach === 'messages' ? 'its own message' : trace.reach === 'far' ? `the ${trace.minDist} tokens before each token` : '',
   trace.skipFirst ? 'the first token' : '',
@@ -69,16 +74,24 @@ function showLines() {
 
       <h3 class="span-sub">Which messages it reads</h3>
       <p class="hint">
-        Share of the span's attention, averaged over its tokens and every head. Not counted: {{ leftOut || 'nothing' }}
-        (see the trace settings above) — {{ fmtPct(Math.max(0, 1 - counted)) }} of the attention.
+        Share of the span's attention, averaged over its tokens and every head. Per token divides a message's
+        share by the tokens the span can read in it, so a long message does not win by size.
+        Not counted: {{ leftOut || 'nothing' }} (see the trace settings above) — {{ fmtPct(filtered) }} of the attention.
+        Only the {{ span.mass.k }} strongest keys of each head are recorded; they hold {{ fmtPct(span.mass.captured) }}
+        of the span's attention, so the shares are up to {{ fmtPct(lost) }} low.
         Click a message to see which heads read it.
       </p>
+      <div class="seg-toggle span-by" role="group" aria-label="Bars show">
+        <button type="button" :class="{ on: by === 'total' }" @click="by = 'total'">Total</button>
+        <button type="button" :class="{ on: by === 'token' }" @click="by = 'token'">Per token</button>
+      </div>
       <div class="msg-bars">
         <button v-for="b in bars" :key="b.seg" type="button" class="msg-bar" :class="[`role-${b.role}`, { on: b.seg === span.targetSeg }]"
+                :title="`${b.label}: ${fmtPct(b.share)} of the span's attention over ${b.tokens} readable tokens, ${fmtPct(b.perToken)} per token`"
                 @click="span.target = b.seg">
           <span class="msg-bar-label">{{ b.label }}</span>
           <span class="msg-bar-track"><span class="msg-bar-fill" :style="{ width: b.width }"></span></span>
-          <span class="msg-bar-value">{{ fmtPct(b.share) }}</span>
+          <span class="msg-bar-value">{{ by === 'token' ? `${fmtPct(b.perToken)} / token` : fmtPct(b.share) }}</span>
         </button>
       </div>
 

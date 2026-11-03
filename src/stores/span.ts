@@ -45,7 +45,9 @@ export interface MessageShare {
   seg: number;  // index into run.segs
   label: string;
   role: Segment['role'];
-  share: number;
+  share: number;    // of the span's attention, averaged over its tokens and every head
+  tokens: number;   // tokens of the message the filters let the span read
+  perToken: number; // share / tokens
 }
 
 const ROLE_LABEL: Record<Segment['role'], string> = {
@@ -127,13 +129,16 @@ export const useSpanStore = defineStore('span', () => {
     return pairs.length ? { r, s0, s1, pairs, reads } : null;
   });
 
-  // Share of the span's attention per message, every head weighted equally.
-  const messages = computed<MessageShare[]>(() => {
+  // Share of the span's attention per message, every head weighted equally,
+  // and how much of the span's attention the recorded keys hold at all: only
+  // the K strongest keys of each head are kept, so the shares are low by
+  // whatever fell below them.
+  const shares = computed(() => {
     const m = measured.value;
-    if (!m) return [];
+    if (!m) return null;
     const { r, pairs, reads } = m;
     const share = new Float64Array(r.segs.length);
-    let heads = 0;
+    let heads = 0, kept = 0;
     for (const { H, K, vals, idx } of r.layers) {
       heads += H;
       for (const { q } of pairs) {
@@ -142,19 +147,28 @@ export const useSpanStore = defineStore('span', () => {
           for (let k = 0; k < K; k++) {
             const w = vals[base + k];
             if (w < 1e-4) break;
+            kept += w;
             const key = idx[base + k];
             if (reads(q, key)) share[r.segOf[key]] += w;
           }
         }
       }
     }
+    const n = heads * pairs.length;
     const labels = segLabels(r);
-    const out: MessageShare[] = [];
+    const messages: MessageShare[] = [];
     share.forEach((v, si) => {
-      if (v > 0) out.push({ seg: si, label: labels[si], role: r.segs[si].role, share: v / (heads * pairs.length) });
+      if (v <= 0) return;
+      const s = r.segs[si];
+      let tokens = 0;
+      for (let p = s.start; p < s.end; p++) if (pairs.some(({ q }) => reads(q, p))) tokens++;
+      messages.push({ seg: si, label: labels[si], role: s.role, share: v / n, tokens, perToken: tokens ? v / n / tokens : 0 });
     });
-    return out;
+    return { messages, captured: kept / n, k: r.layers[0]?.K ?? 0 };
   });
+  const messages = computed<MessageShare[]>(() => shares.value?.messages ?? []);
+  /** How much of the span's attention the recorded top-K keys hold, and K. */
+  const mass = computed(() => ({ captured: shares.value?.captured ?? 0, k: shares.value?.k ?? 0 }));
 
   const targetSeg = computed(() => {
     if (target.value != null && messages.value.some(x => x.seg === target.value)) return target.value;
@@ -215,7 +229,7 @@ export const useSpanStore = defineStore('span', () => {
             if (vals[base + k] < 1e-4) break;
             const key = idx[base + k];
             if (!reads(q, key)) continue;
-            const w = trace.weight(li, h, key, vals[base + k]);
+            const w = trace.weight(li, h, q, key, vals[base + k]);
             if (w > 0) acc.set(pi * r.S + key, (acc.get(pi * r.S + key) ?? 0) + w);
           }
         });
@@ -268,7 +282,7 @@ export const useSpanStore = defineStore('span', () => {
   const currentLabel = computed(() => (result.value ? describe(result.value) : ''));
 
   return {
-    start, end, target, targetSeg, pinned, showLines, messages, result, flow, problem, comparable, pinnedLabel, currentLabel,
+    start, end, target, targetSeg, pinned, showLines, messages, mass, result, flow, problem, comparable, pinnedLabel, currentLabel,
     mark, shiftClick, clear, pin, unpin,
   };
 });

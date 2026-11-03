@@ -24,8 +24,9 @@
     <p>
       Heads that have nothing to read park their attention on a few early tokens: the first token,
       and newlines and punctuation near the start. By default every link counts only with what it
-      gets above the key's usual share (its mean attention from all later tokens in that head), so a
-      system prompt shows up only when a token really reads it.
+      gets above the key's usual share: its mean attention, in that head, from the later tokens of
+      every message but the one being traced, so the reading under study does not count as usual.
+      A system prompt then shows up only when a token really reads it.
     </p>
     <p>
       Attention says where a head reads from, not how much the result matters to the output. Treat

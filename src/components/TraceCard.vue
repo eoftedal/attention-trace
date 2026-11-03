@@ -101,7 +101,7 @@ const nHits = computed(() => trace.trace.hits.size);
       <label class="check"><input v-model="trace.skipFirst" type="checkbox"> Ignore the first token (attention sink)</label>
       <label class="check" title="Role names, special tokens and the newlines between messages">
         <input v-model="trace.skipSpecial" type="checkbox"> Ignore template tokens</label>
-      <label class="check" title="Idle heads park attention on a few early tokens. This subtracts the attention each key gets on average, so only links specific to this token remain.">
+      <label class="check" title="Idle heads park attention on a few early tokens. This subtracts the attention each key gets on average from the other messages' tokens, so only links specific to this token remain.">
         <input v-model="trace.discount" type="checkbox"> Only count attention above each key's usual share</label>
       <label v-if="trace.hops > 1" class="check inline">Follow
         <input v-model.number="trace.branch" type="number" min="1" max="10" class="text-input num"> strongest per hop</label>

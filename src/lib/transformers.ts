@@ -2,7 +2,7 @@
 // library's own types do not describe the callable tokenizer/model objects.
 import type { ChatMessage } from './chatformat';
 import {
-  AutoModelForCausalLM, AutoTokenizer, InterruptableStoppingCriteria, StoppingCriteria, TextStreamer,
+  AutoModelForCausalLM, AutoTokenizer, InterruptableStoppingCriteria, StoppingCriteria, Tensor as HfTensor, TextStreamer,
 } from '@huggingface/transformers';
 
 export interface Tensor {
@@ -24,6 +24,14 @@ export interface Tokenizer {
   (text: string, opts: { return_tensors?: 'pt'; add_special_tokens?: boolean }): Record<string, Tensor> & { input_ids: Tensor };
   decode(ids: number[], opts?: { skip_special_tokens?: boolean }): string;
   apply_chat_template(messages: ChatMessage[], opts: TemplateOptions): string;
+}
+
+/** Model inputs for a token sequence, as the tokenizer would return them. */
+export function inputsFromIds(ids: number[]): Record<string, Tensor> & { input_ids: Tensor } {
+  const n = ids.length;
+  const input_ids = new HfTensor('int64', BigInt64Array.from(ids, v => BigInt(v)), [1, n]);
+  const attention_mask = new HfTensor('int64', new BigInt64Array(n).fill(1n), [1, n]);
+  return { input_ids, attention_mask } as unknown as Record<string, Tensor> & { input_ids: Tensor };
 }
 
 export interface CausalLM {
