@@ -83,11 +83,15 @@ const nHits = computed(() => trace.trace.hits.size);
       </div>
       <div class="ctl">
         <label for="hops-sel">Hops</label>
-        <select id="hops-sel" v-model.number="trace.hops">
+        <select v-if="trace.layerSel < 0" id="hops-sel" v-model.number="trace.hops">
           <option :value="1">1 — direct only</option>
           <option :value="2">2</option>
           <option :value="3">3</option>
           <option :value="4">4</option>
+        </select>
+        <select v-else id="hops-sel" disabled
+                title="A later hop follows what a token gathered in lower layers, so it needs all layers in view">
+          <option>1 — needs all layers</option>
         </select>
       </div>
       <div class="ctl">
@@ -101,9 +105,9 @@ const nHits = computed(() => trace.trace.hits.size);
       <label class="check"><input v-model="trace.skipFirst" type="checkbox"> Ignore the first token (attention sink)</label>
       <label class="check" title="Role names, special tokens and the newlines between messages">
         <input v-model="trace.skipSpecial" type="checkbox"> Ignore template tokens</label>
-      <label class="check" title="Idle heads park attention on a few early tokens. This subtracts the attention each key gets on average from the other messages' tokens, so only links specific to this token remain.">
+      <label class="check" title="Idle heads park attention on a few early tokens. This subtracts the attention each key gets on average from the tokens of later messages (other than the one traced), so only links specific to this token remain.">
         <input v-model="trace.discount" type="checkbox"> Only count attention above each key's usual share</label>
-      <label v-if="trace.hops > 1" class="check inline">Follow
+      <label v-if="trace.maxHops > 1" class="check inline">Follow
         <input v-model.number="trace.branch" type="number" min="1" max="10" class="text-input num"> strongest per hop</label>
     </div>
 

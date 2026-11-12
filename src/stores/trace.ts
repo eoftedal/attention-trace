@@ -108,11 +108,18 @@ export const useTraceStore = defineStore('trace', () => {
     return special.value.map((sp, p) => (sp || !r.content[p] ? 1 : 0));
   });
 
-  // Per layer, [H, S]: the mean attention each key gets from the queries that
-  // can see it, leaving out the queries of one message. The message being
+  // Per layer, [H, S]: the mean attention each key gets from the tokens of
+  // later messages, leaving out the queries of one message. The message being
   // traced is left out, so that the reading under study does not count as the
   // key's usual share (a reply reading the password in every token would
-  // otherwise make that reading "usual"). Computed per message as needed.
+  // otherwise make that reading "usual"). The key's own message is left out
+  // too: its tokens read the key at short range (and the key reads itself),
+  // which says nothing about what a later message usually puts there.
+  // A mean over few queries is unreliable, so it is shrunk toward zero as if
+  // FEW more queries had read nothing; a key no other message can see (in the
+  // message right before the one traced) counts with its raw weight.
+  // Computed per message as needed.
+  const FEW = 8;
   const baselines = new Map<number, Float32Array[]>(); // message left out → per layer
   let baselinesOf: AttnRun | null = null;
 
@@ -126,19 +133,22 @@ export const useTraceStore = defineStore('trace', () => {
       const out = new Float32Array(H * r.S);
       for (let q = 0; q < r.S; q++) {
         if (q >= s.start && q < s.end) continue;
+        const own = r.segOf[q];
         for (let h = 0; h < H; h++) {
           const base = (q * H + h) * K;
           for (let k = 0; k < K; k++) {
             const w = vals[base + k];
             if (w < 1e-4) break;
-            out[h * r.S + idx[base + k]] += w;
+            const key = idx[base + k];
+            if (r.segOf[key] !== own) out[h * r.S + key] += w;
           }
         }
       }
       for (let key = 0; key < r.S; key++) {
-        // queries that can see the key (q ≥ key), without those of the message left out
-        const n = r.S - key - Math.max(0, s.end - Math.max(s.start, key));
-        const f = n > 0 ? 1 / n : 0;
+        // queries after the key's message, without those of the message left out
+        const after = r.segs[r.segOf[key]].end;
+        const n = r.S - after - Math.max(0, s.end - Math.max(s.start, after));
+        const f = 1 / (n + FEW);
         for (let h = 0; h < H; h++) out[h * r.S + key] *= f;
       }
       return out;
@@ -207,6 +217,10 @@ export const useTraceStore = defineStore('trace', () => {
     return out;
   }
 
+  // Later hops follow links in lower layers than the one that reached their
+  // source, so with a single layer in view there is nothing to follow.
+  const maxHops = computed(() => (layerSel.value < 0 ? hops.value : 1));
+
   const trace = computed<Trace>(() => {
     const r = run.value;
     const q = queryPos.value;
@@ -214,28 +228,39 @@ export const useTraceStore = defineStore('trace', () => {
     const hits = new Map<number, Hit>();
     if (!r || q == null) return { arcs, hits };
 
-    let frontier = new Map<number, number>([[q, 1]]); // source → path weight
+    // What a link in layer ℓ carries from its key was gathered there by the
+    // layers below ℓ. So a source keeps the links that reached it (layer and
+    // path weight), and is followed on only through lower layers than one of
+    // them, with the strongest path such a link continues.
+    type Reached = { li: number; path: number };
+    let frontier = new Map<number, Reached[]>([[q, [{ li: Infinity, path: 1 }]]]);
     const expanded = new Set<number>();
-    for (let hop = 1; hop <= hops.value; hop++) {
-      const next = new Map<number, number>();
-      for (const [src, pw] of frontier) {
+    for (let hop = 1; hop <= maxHops.value; hop++) {
+      const next = new Map<number, Reached[]>();
+      for (const [src, reached] of frontier) {
         expanded.add(src);
-        const links = contributions(src).filter(c => c.w >= minWeight.value).sort((a, b) => b.w - a.w);
+        const pathInto = (li: number) => reached.reduce((p, x) => (x.li > li && x.path > p ? x.path : p), 0);
+        const links = contributions(src)
+          .map(c => ({ ...c, path: pathInto(c.series) * c.w })) // series: the layer, past the first hop
+          .filter(c => c.path > 0 && c.w >= minWeight.value).sort((a, b) => b.w - a.w);
         links.slice(0, hop === 1 ? arcsPerSource.value : branch.value).forEach(c =>
-          arcs.push({ from: src, to: c.key, series: c.series, w: c.w, path: pw * c.w, hop }));
+          arcs.push({ from: src, to: c.key, series: c.series, w: c.w, path: c.path, hop }));
         const best = new Map<number, number>(); // key → strongest link
         for (const c of links) {
-          const path = pw * c.w;
           let hit = hits.get(c.key);
-          if (!hit) hits.set(c.key, hit = { pos: c.key, path, hop, w: c.w, series: c.series, links: [] });
-          hit.path = Math.max(hit.path, path);
+          if (!hit) hits.set(c.key, hit = { pos: c.key, path: c.path, hop, w: c.w, series: c.series, links: [] });
+          hit.path = Math.max(hit.path, c.path);
           if (hop < hit.hop || (hop === hit.hop && c.w > hit.w)) Object.assign(hit, { hop, w: c.w, series: c.series });
           hit.links.push({ series: c.series, w: c.w, hop, from: src });
           best.set(c.key, Math.max(best.get(c.key) ?? 0, c.w));
         }
-        [...best].sort((a, b) => b[1] - a[1]).slice(0, branch.value).forEach(([key, w]) => {
-          if (!expanded.has(key)) next.set(key, Math.max(next.get(key) ?? 0, pw * w));
-        });
+        const follow = new Set([...best].sort((a, b) => b[1] - a[1]).slice(0, branch.value).map(([key]) => key));
+        for (const c of links) {
+          if (!follow.has(c.key) || expanded.has(c.key)) continue;
+          let into = next.get(c.key);
+          if (!into) next.set(c.key, into = []);
+          into.push({ li: c.series, path: c.path });
+        }
       }
       frontier = next;
       if (!frontier.size) break;
@@ -307,7 +332,7 @@ export const useTraceStore = defineStore('trace', () => {
 
   return {
     selPos, layerSel, combine, reach, minDist, hops, branch, arcsPerSource, minWeight, skipFirst, skipSpecial, discount,
-    hidden, mapScope, produced, queryPos, run, special, template, seriesCount, trace, headMap,
+    hidden, mapScope, produced, queryPos, run, special, template, seriesCount, maxHops, trace, headMap,
     seriesLabel, allowed, weight, select, toggleSeries, soloSeries, setLayer, focusHead,
   };
 });

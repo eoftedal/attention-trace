@@ -458,8 +458,10 @@ export const useChatStore = defineStore('chat', () => {
       generated = { model: useModelStore().loadedModel!, key: convKey.value, prompt: text, promptIds, ids: newIds };
       unfinished = THINK_MARKER.test(reply) && !THINK_CLOSE.test(reply);
     } catch (err) {
+      // No reply to trace, and tracing would clear the error.
       runHint.value = `Error: ${(err as Error).message}`;
       console.error(err);
+      return;
     } finally {
       generating.value = false;
       streamText.value = '';

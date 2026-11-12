@@ -17,16 +17,18 @@
       One hop shows what the selected token reads directly. With more hops, the strongest keys are
       traced in turn — a reply that reads an earlier reply is followed on to the user message that
       reply read — and each hop is drawn fainter, with dashed arcs. The path weight is the product of
-      the weights along the way. Each hop uses
-      the same layer setting, so this is an approximation: information that reached a token in layer
-      ℓ was itself gathered by earlier layers.
+      the weights along the way. What a link in layer ℓ carries was gathered by the layers below ℓ,
+      so a key is followed on only through lower layers than the link that reached it; with a single
+      layer selected there is nothing to follow, and only the direct hop is shown.
     </p>
     <p>
       Heads that have nothing to read park their attention on a few early tokens: the first token,
       and newlines and punctuation near the start. By default every link counts only with what it
-      gets above the key's usual share: its mean attention, in that head, from the later tokens of
-      every message but the one being traced, so the reading under study does not count as usual.
-      A system prompt then shows up only when a token really reads it.
+      gets above the key's usual share: its mean attention, in that head, from the tokens of later
+      messages, without the one being traced, so the reading under study does not count as usual.
+      (The key's own message is left out too: its tokens read the key at short range.) Where few
+      such tokens exist the share is shrunk toward zero, and the message right before the one traced
+      counts with its raw weights. A system prompt then shows up only when a token really reads it.
     </p>
     <p>
       Attention says where a head reads from, not how much the result matters to the output. Treat
