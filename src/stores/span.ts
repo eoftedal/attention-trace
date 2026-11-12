@@ -17,10 +17,17 @@ import { useTraceStore } from './trace';
 // up; the lines use the trace's weights (above each key's usual share, by
 // default), so resting spots don't drown them.
 
-/** Per layer: each head's share of the span's attention on the target message. */
+/** Per layer and head: the share of the span's attention on the target message, and the message read most. */
 export interface SpanLayer {
   layer: number;
-  share: Float32Array; // [H]
+  share: Float32Array;    // [H] on the target message
+  top: Int16Array;        // [H] index into SpanResult.sources of the message read most, -1 if none
+  topShare: Float32Array; // [H] the share on that message
+}
+
+export interface SpanSource {
+  label: string;
+  role: Segment['role'];
 }
 
 export interface SpanResult {
@@ -29,7 +36,18 @@ export interface SpanResult {
   role: string;        // the span's message
   target: string;      // the message the grid measures
   queries: number;
+  sources: SpanSource[]; // the messages, as `top` refers to them
   layers: SpanLayer[];
+}
+
+/** A sentence or line of a message, with the span's attention on it. */
+export interface PieceShare {
+  start: number; // first token
+  end: number;   // exclusive
+  label: string;
+  share: number;
+  tokens: number;
+  perToken: number;
 }
 
 /** Span token → earlier token links, averaged over the heads in view, for drawing. */
@@ -129,15 +147,16 @@ export const useSpanStore = defineStore('span', () => {
     return pairs.length ? { r, s0, s1, pairs, reads } : null;
   });
 
-  // Share of the span's attention per message, every head weighted equally,
-  // and how much of the span's attention the recorded keys hold at all: only
-  // the K strongest keys of each head are kept, so the shares are low by
-  // whatever fell below them.
-  const shares = computed(() => {
+  // The span's attention per key, summed over its tokens and every head, for
+  // the keys the filters let it read; which keys any of its tokens can read;
+  // and how much of the span's attention the recorded keys hold at all (only
+  // the K strongest keys of each head are kept, so shares are low by whatever
+  // fell below them).
+  const perKey = computed(() => {
     const m = measured.value;
     if (!m) return null;
     const { r, pairs, reads } = m;
-    const share = new Float64Array(r.segs.length);
+    const sum = new Float64Array(r.S);
     let heads = 0, kept = 0;
     for (const { H, K, vals, idx } of r.layers) {
       heads += H;
@@ -149,30 +168,78 @@ export const useSpanStore = defineStore('span', () => {
             if (w < 1e-4) break;
             kept += w;
             const key = idx[base + k];
-            if (reads(q, key)) share[r.segOf[key]] += w;
+            if (reads(q, key)) sum[key] += w;
           }
         }
       }
     }
+    // The latest query can read the most, so it is tried first.
+    const byQ = [...pairs].sort((a, b) => b.q - a.q);
+    const readable = new Uint8Array(r.S);
+    for (let p = 0; p < r.S; p++) if (byQ.some(({ q }) => reads(q, p))) readable[p] = 1;
     const n = heads * pairs.length;
-    const labels = segLabels(r);
-    const messages: MessageShare[] = [];
-    share.forEach((v, si) => {
-      if (v <= 0) return;
-      const s = r.segs[si];
-      let tokens = 0;
-      for (let p = s.start; p < s.end; p++) if (pairs.some(({ q }) => reads(q, p))) tokens++;
-      messages.push({ seg: si, label: labels[si], role: s.role, share: v / n, tokens, perToken: tokens ? v / n / tokens : 0 });
-    });
-    return { messages, captured: kept / n, k: r.layers[0]?.K ?? 0 };
+    return { r, sum, n, readable, captured: kept / n, k: r.layers[0]?.K ?? 0 };
   });
-  const messages = computed<MessageShare[]>(() => shares.value?.messages ?? []);
+  type PerKey = NonNullable<typeof perKey.value>;
+
+  // The span's attention on the keys [a, b): its share, and per readable token.
+  function shareOf(pk: PerKey, a: number, b: number): { share: number; tokens: number; perToken: number } {
+    let v = 0, tokens = 0;
+    for (let p = a; p < b; p++) { v += pk.sum[p]; tokens += pk.readable[p]; }
+    const share = v / pk.n;
+    return { share, tokens, perToken: tokens ? share / tokens : 0 };
+  }
+
+  // Share of the span's attention per message, every head weighted equally.
+  const messages = computed<MessageShare[]>(() => {
+    const pk = perKey.value;
+    if (!pk) return [];
+    const labels = segLabels(pk.r);
+    const out: MessageShare[] = [];
+    pk.r.segs.forEach((s, si) => {
+      const x = shareOf(pk, s.start, s.end);
+      if (x.share > 0) out.push({ seg: si, label: labels[si], role: s.role, ...x });
+    });
+    return out;
+  });
   /** How much of the span's attention the recorded top-K keys hold, and K. */
-  const mass = computed(() => ({ captured: shares.value?.captured ?? 0, k: shares.value?.k ?? 0 }));
+  const mass = computed(() => ({ captured: perKey.value?.captured ?? 0, k: perKey.value?.k ?? 0 }));
 
   const targetSeg = computed(() => {
     if (target.value != null && messages.value.some(x => x.seg === target.value)) return target.value;
     return [...messages.value].sort((a, b) => b.share - a.share)[0]?.seg ?? null;
+  });
+
+  // Ends a sentence: the token ends with .!? (closing quotes allowed) and the
+  // next token starts with a space, so a dot inside a URL does not count.
+  const SENTENCE_END = /[.!?]["'”’)\]]*$/;
+
+  // The target message split into sentences and lines, each with its share.
+  // Inside a tool result, the facts a reply reports and an injected
+  // instruction are different sentences.
+  const pieces = computed<PieceShare[]>(() => {
+    const pk = perKey.value, t = targetSeg.value;
+    if (!pk || t == null) return [];
+    const { r } = pk;
+    const s = r.segs[t];
+    const text = (p: number) => decode(r.ids[p]);
+    const isText = (p: number) => !!r.content[p] && !trace.special[p];
+    const out: PieceShare[] = [];
+    let start = -1;
+    const close = (end: number) => {
+      if (start < 0) return;
+      const label = r.ids.slice(start, end).map(decode).join('').replace(/\s+/g, ' ').trim();
+      if (label) out.push({ start, end, label: label.length > 70 ? `${label.slice(0, 67)}…` : label, ...shareOf(pk, start, end) });
+      start = -1;
+    };
+    for (let p = s.start; p < s.end; p++) {
+      if (!isText(p)) { close(p); continue; }
+      if (start < 0) start = p;
+      const next = p + 1 < s.end && isText(p + 1) ? text(p + 1) : null;
+      if (text(p).includes('\n') || (SENTENCE_END.test(text(p)) && (next === null || /^\s/.test(next)))) close(p + 1);
+    }
+    close(s.end);
+    return out;
   });
 
   const result = computed<SpanResult | null>(() => {
@@ -180,9 +247,9 @@ export const useSpanStore = defineStore('span', () => {
     const t = targetSeg.value;
     if (!m || t == null) return null;
     const { r, s0, s1, pairs, reads } = m;
-    const tSeg = r.segs[t];
+    const nSeg = r.segs.length;
     const layers = r.layers.map(({ layer, H, K, vals, idx }) => {
-      const share = new Float32Array(H);
+      const bySeg = new Float32Array(H * nSeg); // per head, the span's attention on each message
       for (const { q } of pairs) {
         for (let h = 0; h < H; h++) {
           const base = (q * H + h) * K;
@@ -190,12 +257,19 @@ export const useSpanStore = defineStore('span', () => {
             const w = vals[base + k];
             if (w < 1e-4) break;
             const key = idx[base + k];
-            if (key >= tSeg.start && key < tSeg.end && reads(q, key)) share[h] += w;
+            if (reads(q, key)) bySeg[h * nSeg + r.segOf[key]] += w;
           }
         }
       }
-      for (let h = 0; h < H; h++) share[h] /= pairs.length;
-      return { layer, share };
+      const share = new Float32Array(H), top = new Int16Array(H).fill(-1), topShare = new Float32Array(H);
+      for (let h = 0; h < H; h++) {
+        share[h] = bySeg[h * nSeg + t] / pairs.length;
+        for (let si = 0; si < nSeg; si++) {
+          const v = bySeg[h * nSeg + si] / pairs.length;
+          if (v > topShare[h]) { topShare[h] = v; top[h] = si; }
+        }
+      }
+      return { layer, share, top, topShare };
     });
     const text = r.ids.slice(s0, s1 + 1).map(decode).join('').replace(/\s+/g, ' ').trim();
     const labels = segLabels(r);
@@ -205,6 +279,7 @@ export const useSpanStore = defineStore('span', () => {
       role: labels[r.segOf[s0]],
       target: labels[t],
       queries: pairs.length,
+      sources: r.segs.map((s, i) => ({ label: labels[i], role: s.role })),
       layers,
     };
   });
@@ -282,7 +357,7 @@ export const useSpanStore = defineStore('span', () => {
   const currentLabel = computed(() => (result.value ? describe(result.value) : ''));
 
   return {
-    start, end, target, targetSeg, pinned, showLines, messages, mass, result, flow, problem, comparable, pinnedLabel, currentLabel,
+    start, end, target, targetSeg, pinned, showLines, messages, mass, pieces, result, flow, problem, comparable, pinnedLabel, currentLabel,
     mark, shiftClick, clear, pin, unpin,
   };
 });

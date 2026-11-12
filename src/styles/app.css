@@ -577,6 +577,10 @@ button.small { padding: 2px 8px; font-size: 0.75rem; }
 .span-summary { margin: 0 0 12px; font-size: 0.95rem; }
 .span-sub { margin: 18px 0 4px; font-size: 1rem; font-weight: 650; }
 .span-by { margin: 8px 0 0; }
+.span-sub.sub2 { margin: 12px 0 2px; font-size: 0.85rem; font-weight: 600; color: var(--muted); }
+.msg-bars.pieces { max-width: 56em; }
+.msg-bars.pieces .msg-bar { grid-template-columns: minmax(0, 1fr) 10em 6.5em; }
+.piece-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .msg-bars { display: flex; flex-direction: column; gap: 4px; max-width: 40em; margin: 8px 0 4px; }
 .msg-bar {
   display: grid; grid-template-columns: 9em 1fr 6.5em; align-items: center; gap: 10px;
@@ -602,3 +606,5 @@ button.small { padding: 2px 8px; font-size: 0.75rem; }
 .grid-scale .swatch { display: inline-block; width: 12px; height: 10px; border-radius: 2px; }
 .grid-scale .swatch.pos { background: var(--heat); }
 .grid-scale .swatch.neg { background: var(--heat-neg); }
+.grid-scale .swatch.role { background: var(--sc); }
+.grid-scale .legend-item { display: inline-flex; align-items: center; gap: 4px; margin-right: 4px; }

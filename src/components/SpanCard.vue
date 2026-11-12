@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import { modelLabel } from '../lib/config';
 import { fmtPct } from '../lib/format';
 import { overall, useSpanStore, type MessageShare, type SpanResult } from '../stores/span';
 import { useTraceStore } from '../stores/trace';
 import HeadGrid from './HeadGrid.vue';
+import SourceGrid from './SourceGrid.vue';
 import StageSection from './StageSection.vue';
 
 const span = useSpanStore();
@@ -31,6 +33,41 @@ const bars = computed(() => {
 const counted = computed(() => span.messages.reduce((s, m) => s + m.share, 0));
 const filtered = computed(() => Math.max(0, span.mass.captured - counted.value));
 const lost = computed(() => Math.max(0, 1 - span.mass.captured));
+
+// Inside the target message: its sentences and lines.
+const targetRole = computed(() => span.messages.find(m => m.seg === span.targetSeg)?.role ?? 'user');
+const pieceBars = computed(() => {
+  const of = (p: { share: number; perToken: number }) => (by.value === 'token' ? p.perToken : p.share);
+  const max = Math.max(...span.pieces.map(of), 1e-9);
+  return span.pieces.map(p => ({ ...p, width: `${(of(p) / max) * 100}%` }));
+});
+function locate(p: number) {
+  document.querySelector(`.conv [data-pos="${p}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+// The message each head reads most, and the heads reading a different one
+// than in the pinned run (among heads that read some message at all).
+const MIN_SOURCE = 0.02; // a head reads a message from this share of its attention
+const sourceRows = (r: SpanResult) => r.layers.map(L => ({ layer: L.layer, top: L.top, share: L.topShare }));
+const spanLabel = (x: SpanResult) => `“${x.label}” (${x.role})`;
+const switched = computed(() => {
+  const a = span.pinned, b = span.result;
+  if (!a || !b || !span.comparable) return null;
+  let n = 0, of = 0;
+  const rows = b.layers.map((L, li) => {
+    const P = a.layers[li];
+    const top = new Int16Array(L.top.length).fill(-1);
+    for (let h = 0; h < L.top.length; h++) {
+      if (L.topShare[h] < MIN_SOURCE && P.topShare[h] < MIN_SOURCE) continue;
+      of++;
+      const was = P.top[h] >= 0 ? a.sources[P.top[h]].label : null;
+      const now = L.top[h] >= 0 ? b.sources[L.top[h]].label : null;
+      if (was !== now) { n++; top[h] = L.top[h]; }
+    }
+    return { layer: L.layer, top, share: L.topShare };
+  });
+  return { rows, n, of };
+});
 const leftOut = computed(() => [
   trace.reach === 'messages' ? 'its own message' : trace.reach === 'far' ? `the ${trace.minDist} tokens before each token` : '',
   trace.skipFirst ? 'the first token' : '',
@@ -94,6 +131,18 @@ function showLines() {
           <span class="msg-bar-value">{{ by === 'token' ? `${fmtPct(b.perToken)} / token` : fmtPct(b.share) }}</span>
         </button>
       </div>
+      <template v-if="span.pieces.length > 1">
+        <h4 class="span-sub sub2">Inside {{ span.result.target }}, by sentence or line</h4>
+        <div class="msg-bars pieces">
+          <button v-for="pc in pieceBars" :key="pc.start" type="button" class="msg-bar" :class="`role-${targetRole}`"
+                  :title="`${fmtPct(pc.share)} of the span's attention over ${pc.tokens} readable tokens, ${fmtPct(pc.perToken)} per token. Click to find it.`"
+                  @click="locate(pc.start)">
+            <span class="msg-bar-label piece-label">{{ pc.label }}</span>
+            <span class="msg-bar-track"><span class="msg-bar-fill" :style="{ width: pc.width }"></span></span>
+            <span class="msg-bar-value">{{ by === 'token' ? `${fmtPct(pc.perToken)} / token` : fmtPct(pc.share) }}</span>
+          </button>
+        </div>
+      </template>
 
       <h3 class="span-sub">Which heads read {{ span.result.target }}</h3>
       <p class="span-summary">
@@ -122,6 +171,29 @@ function showLines() {
                   @cell="(li, h) => { trace.focusHead(li, h); showLines(); }" />
         <HeadGrid v-if="diffRows" :rows="diffRows" :format="fmtDiff" diverging
                   title="Now minus pinned" @cell="(li, h) => { trace.focusHead(li, h); showLines(); }" />
+      </div>
+
+      <h3 class="span-sub">Which message each head reads most</h3>
+      <p class="hint">
+        Each head is colored by the message it puts most of the span's attention on, more opaque the more.
+        Heads that read instructions normally read the system prompt or the user's request; under an injection
+        they read the tool result instead. Pin a run and change the conversation: the third grid shows the heads
+        that read a different message now.
+        <template v-if="switched">
+          <strong>{{ switched.n }} of {{ switched.of }}</strong> heads read a different message than in the pinned run
+          (heads that put at least {{ fmtPct(MIN_SOURCE) }} of their attention on some message).
+        </template>
+      </p>
+      <div class="head-grids">
+        <SourceGrid v-if="span.pinned && span.comparable" :rows="sourceRows(span.pinned)" :sources="span.pinned.sources" :format="fmtPct"
+                    :title="`Pinned — ${modelLabel(span.pinned.model)}: ${spanLabel(span.pinned)}`"
+                    @cell="(li, h) => { trace.focusHead(li, h); showLines(); }" />
+        <SourceGrid :rows="sourceRows(span.result)" :sources="span.result.sources" :format="fmtPct"
+                    :title="span.pinned && span.comparable ? `Now — ${spanLabel(span.result)}` : undefined"
+                    @cell="(li, h) => { trace.focusHead(li, h); showLines(); }" />
+        <SourceGrid v-if="switched" :rows="switched.rows" :sources="span.result.sources" :format="fmtPct"
+                    title="Heads that switched, colored by what they read now"
+                    @cell="(li, h) => { trace.focusHead(li, h); showLines(); }" />
       </div>
       <p v-if="span.pinned && !span.comparable" class="hint">
         Pinned: {{ span.pinnedLabel }}. It can only be compared with a run of the same model.

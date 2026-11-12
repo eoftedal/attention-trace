@@ -58,6 +58,19 @@ weights (above each key's usual share from the other messages, by default). The 
 of the span's attention the recorded keys hold: only the strongest keys of each head are kept, and
 the shares are low by whatever fell below them.
 
+The message read most is also split into its sentences and lines, each with its share, and a second
+head grid colors every head by the message it reads most. With a pinned run to compare, a third grid
+shows the heads that read a different message now.
+
+### Spotting an injection
+
+Reading the tool result is not the signal: a reply that summarizes a page is meant to read it. Look
+instead at which sentences of it are read (the facts the reply reports, or the injected instruction),
+whether the user's request is still read at all, what produced the first token of the reply (where
+the model decided what to do), and which heads switched source compared with a benign run: heads that
+read the system prompt or the user's request in the benign run and the tool result in the injected
+one.
+
 ## Tool calls
 
 A conversation can contain fake tool calls (`fetch_url`) and their results; nothing is ever called.
